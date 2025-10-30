@@ -1,0 +1,919 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Echoes in the Dark</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&family=Space+Mono:wght@400;700&display=swap');
+  :root{ --neon-core:#7A00FF; --neon-outer:#B04BFF; --ui-purple:#B04BFF; }
+  html,body{ height:100%; margin:0; background:#020105; font-family:"Space Mono",monospace; color:#ffd6b3; }
+  .wrap{ height:100%; display:flex; align-items:center; justify-content:center; padding:18px; box-sizing:border-box; }
+  #game-container{ width:920px; height:700px; max-width:96vw; max-height:92vh; border-radius:14px; overflow:hidden; position:relative; background:linear-gradient(180deg,#020204,#05020a); border:4px solid rgba(120,30,200,0.08); box-shadow:0 10px 60px rgba(0,0,0,0.7), inset 0 0 40px rgba(122,0,255,0.04); }
+  canvas#gameCanvas{ display:block; width:100%; height:100%; background:transparent; }
+  .message-overlay{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center; flex-direction:column; background:rgba(0,0,0,0.92); color:#ffd6b3; z-index:80; padding:18px; text-align:center; }
+  .btn{ margin-top:16px; padding:10px 18px; border-radius:8px; background:linear-gradient(45deg,var(--neon-outer),var(--neon-core)); color:#070707; font-weight:800; border:none; cursor:pointer; box-shadow:0 8px 20px rgba(122,0,255,0.14); }
+  input.riddle{ margin-top:12px; padding:8px 10px; border-radius:6px; border:2px solid rgba(176,75,255,0.55); background:#10020a; color:#ffd6b3; text-align:center; width:72%; max-width:380px; }
+  .small{ font-size:13px; color:#ffd6b3; } #solveRiddleButton {transition: opacity 0.3s ease;}
+
+  @media (max-width:980px){ #game-container{ width:96vw; height:78vh; border-radius:10px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="game-container">
+    <canvas id="gameCanvas"></canvas>
+
+    <!-- Start overlay (title screen) -->
+    <div id="startOverlay" class="message-overlay">
+      <h1 style="font-family:'Cinzel',serif;font-size:36px;color:var(--neon-outer);text-shadow:0 0 18px rgba(176,75,255,0.6);margin:0">ECHOES IN THE DARK</h1>
+      <p style="color:#d8c0ff;margin-top:10px;max-width:66%;">A blind maze — use echo pings to reveal nearby walls. Water kills immedietely and walls deal damage. Solve the riddle to restore +3 pings.</p>
+      <p class="small" style="margin-top:6px">Move: WASD or Arrow keys · Ping: SPACE ·</p>
+      <button id="startButton" class="btn">START MAZE</button>
+    </div>
+
+    <!-- Riddle overlay -->
+    <div id="riddleOverlay" class="message-overlay" style="display:none;opacity:0;z-index:100;">
+      <h2 style="color:var(--neon-outer);font-size:28px;margin:0">THE RIDDLE</h2>
+      <p style="color:#ffd6b3;margin-top:8px">Answer to restore <strong>+3</strong> echo pings.</p>
+      <p id="riddleText" style="color:#fff;margin-top:12px;font-size:18px;max-width:78%;">If two witches were watching two watches then which witch was watching which watch?</p>
+      <input id="riddleInput" class="riddle" placeholder="Type your answer (enter to submit)"/>
+      <button id="submitRiddle" class="btn">SUBMIT</button>
+      <p id="riddleFeedback" style="color:#ffd6b3;margin-top:10px"></p>
+    </div>
+
+    <!-- Game over overlay -->
+    <div id="endOverlay" class="message-overlay" style="display:none;opacity:0;z-index:120;">
+      <h2 id="endTitle" style="font-size:28px;margin:0">GAME OVER</h2>
+      <p id="endMessage" style="color:#ffd6b3;margin-top:8px">...</p>
+      <p id="endScore" style="color:#b6ffb6;margin-top:8px"></p>
+      <button id="restartButton" class="btn">RETRY</button>
+    </div>
+
+    <!-- Solve Riddle button -->
+    <button id="solveRiddleButton" class="btn" style="
+      position:absolute;
+      bottom:16px;
+      right:16px;
+      z-index:60;
+      display:none;
+      opacity:0.9;
+      font-size:13px;
+      padding:8px 14px;
+    ">SOLVE RIDDLE
+    </button>
+
+  </div>
+</div>
+
+
+<script>
+/* DOM */
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+const startOverlay = document.getElementById('startOverlay');
+const riddleOverlay = document.getElementById('riddleOverlay');
+const riddleText = document.getElementById('riddleText');
+const riddleInput = document.getElementById('riddleInput');
+const riddleFeedback = document.getElementById('riddleFeedback');
+const submitRiddleBtn = document.getElementById('submitRiddle');
+const endOverlay = document.getElementById('endOverlay');
+const endTitle = document.getElementById('endTitle');
+const endMessage = document.getElementById('endMessage');
+const endScore = document.getElementById('endScore');
+const startButton = document.getElementById('startButton');
+const restartButton = document.getElementById('restartButton');
+const solveRiddleButton = document.getElementById('solveRiddleButton');
+
+let gameRunning = false;
+let lastTime = 0;
+let keys = {};
+let audioCtx = null;
+
+// BGM 
+let audioCtxBGM = null;
+let bgmGain = null;
+let bgmOsc1 = null;
+let bgmOsc2 = null;
+let bgmNoise = null;
+let bgmNoiseGain = null;
+let bgmLfo = null;
+let bgmPlaying = false;
+
+/* bgm */
+function startBGM() {
+  if (bgmPlaying) return;
+  try {
+    if (!audioCtxBGM) {
+      audioCtxBGM = new (window.AudioContext || window.webkitAudioContext)();
+    } else if (audioCtxBGM.state === "suspended") {
+        audioCtxBGM.resume();
+      }
+    bgmGain = audioCtxBGM.createGain();
+    bgmGain.gain.value = 0; 
+    bgmGain.connect(audioCtxBGM.destination);
+    bgmOsc1 = audioCtxBGM.createOscillator();
+    bgmOsc2 = audioCtxBGM.createOscillator();
+    bgmOsc1.type = 'sine';
+    bgmOsc2.type = 'sine';
+    bgmOsc1.frequency.value = 55.0; 
+    bgmOsc2.frequency.value = 58.2; 
+    const g1 = audioCtxBGM.createGain();
+    const g2 = audioCtxBGM.createGain();
+    g1.gain.value = 0.14;
+    g2.gain.value = 0.10;
+    const lp = audioCtxBGM.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 900;
+    bgmLfo = audioCtxBGM.createOscillator();
+    const lfoGain = audioCtxBGM.createGain();
+    bgmLfo.frequency.value = 0.07; 
+    lfoGain.gain.value = 380; 
+    bgmLfo.connect(lfoGain);
+    lfoGain.connect(lp.frequency);
+    const bufferSize = 2 * audioCtxBGM.sampleRate;
+    const noiseBuffer = audioCtxBGM.createBuffer(1, bufferSize, audioCtxBGM.sampleRate);
+    const output = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) output[i] = (Math.random() * 2 - 1) * 0.25;
+    bgmNoise = audioCtxBGM.createBufferSource();
+    bgmNoise.buffer = noiseBuffer;
+    bgmNoise.loop = true;
+    bgmNoiseGain = audioCtxBGM.createGain();
+    bgmNoiseGain.gain.value = 0.035;
+    bgmOsc1.connect(g1); g1.connect(lp);
+    bgmOsc2.connect(g2); g2.connect(lp);
+    lp.connect(bgmGain);
+    bgmNoise.connect(bgmNoiseGain); bgmNoiseGain.connect(bgmGain);
+    const now = audioCtxBGM.currentTime;
+    bgmOsc1.start(now);
+    bgmOsc2.start(now);
+    bgmNoise.start(now);
+    bgmLfo.start(now);
+    bgmGain.gain.cancelScheduledValues(now);
+    bgmGain.gain.setValueAtTime(0, now);
+    bgmGain.gain.linearRampToValueAtTime(0.28, now + 3.2);
+    bgmPlaying = true;
+  } catch (err) {
+    console.warn('BGM start failed:', err);
+  }
+}
+
+function stopBGM() {
+  if (!audioCtxBGM || !bgmPlaying) return;
+  const now = audioCtxBGM.currentTime;
+  bgmGain.gain.linearRampToValueAtTime(0, now + 1);
+  setTimeout(() => {
+    try {
+      bgmOsc1.stop();
+      bgmOsc2.stop();
+      bgmLfo.stop();
+    } catch {}
+    bgmPlaying = false;
+  }, 1200);
+}
+
+/* riddle tokens */
+const RIDDLE_TOKENS = ["witch","watch","a","b","one","two"];
+
+/* game state */
+let gameState = {
+  player: { x:50, y:50, size:12, speed:420, vx:0, vy:0, maxSpeed:360, friction:3.6 },
+  maze: { cols:10, rows:8, cellSize:40, offsetX:0, offsetY:0, wallThickness:6, cells:null },
+  echo: { active:false, timer:0, duration:0.6, radius:240 },
+  visibilityGrid: [],
+  pingLimit:10, pingsUsed:0, score:0,
+  maxLives:3, currentLives:3,
+  riddle: { active:false, used:false },
+  walls: [], waterZones: [], traps: [],
+  goal: null,
+  message: "Press SPACE to ping.",
+  currentLevel:1, maxLevels:10
+};
+
+/* timing & flags */
+const DAMAGE_COOLDOWN = 0.6;
+let lastDamage = 0;
+let levelStartTime = 0;
+
+// water dissolve variables
+let waterDeathFlash = 0;      
+let waterDeathActive = false;
+let waterDeathAlpha = 1.0;    
+let freezePlayer = false;
+
+/* utilities */
+function distance(a,b){ const dx=a.x-b.x; const dy=a.y-b.y; return Math.sqrt(dx*dx + dy*dy); }
+function randInt(a,b){ return Math.floor(a + Math.random()*(b-a+1)); }
+function shuffleArray(a){ for (let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } }
+
+/* audio: ping */
+function playPing(){
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.type='sine'; o.frequency.setValueAtTime(880, audioCtx.currentTime);
+  g.gain.setValueAtTime(0.45, audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.16);
+  o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime + 0.16);
+}
+
+/* audio: sizzle (white-noise shaped) */
+function playSizzle() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const duration = 0.9;
+  const sr = audioCtx.sampleRate;
+  const buffer = audioCtx.createBuffer(1, sr * duration, sr);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < data.length; i++){
+    const t = i / data.length;
+    data[i] = (Math.random()*2-1) * Math.pow(1 - t, 2.6) * (0.6 + 0.4*Math.random());
+  }
+  const src = audioCtx.createBufferSource(); src.buffer = buffer;
+  const gain = audioCtx.createGain(); gain.gain.setValueAtTime(0.35, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+  const hp = audioCtx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 800;
+  src.connect(hp); hp.connect(gain); gain.connect(audioCtx.destination);
+  src.start();
+}
+
+/* Maze generator  */
+function generateMaze(cols, rows){
+  const cells = Array(rows).fill(0).map(()=>Array(cols).fill(null));
+  for (let r=0;r<rows;r++) for (let c=0;c<cols;c++) cells[r][c] = { visited:false, walls:{N:true,E:true,S:true,W:true} };
+
+  const stack = [];
+  cells[0][0].visited = true;
+  stack.push({r:0,c:0});
+
+  while (stack.length){
+    const cur = stack[stack.length-1];
+    const r = cur.r, c = cur.c;
+    const neighbors = [];
+    if (r>0 && !cells[r-1][c].visited) neighbors.push({r:r-1,c:c,dir:'N'});
+    if (c<cols-1 && !cells[r][c+1].visited) neighbors.push({r:r,c:c+1,dir:'E'});
+    if (r<rows-1 && !cells[r+1][c].visited) neighbors.push({r:r+1,c:c,dir:'S'});
+    if (c>0 && !cells[r][c-1].visited) neighbors.push({r:r,c:c-1,dir:'W'});
+
+    if (neighbors.length === 0) stack.pop();
+    else {
+      const pick = neighbors[Math.floor(Math.random()*neighbors.length)];
+      if (pick.dir === 'N'){ cells[r][c].walls.N = false; cells[pick.r][pick.c].walls.S = false; }
+      if (pick.dir === 'E'){ cells[r][c].walls.E = false; cells[pick.r][pick.c].walls.W = false; }
+      if (pick.dir === 'S'){ cells[r][c].walls.S = false; cells[pick.r][pick.c].walls.N = false; }
+      if (pick.dir === 'W'){ cells[r][c].walls.W = false; cells[pick.r][pick.c].walls.E = false; }
+      cells[pick.r][pick.c].visited = true;
+      stack.push({r:pick.r,c:pick.c});
+    }
+  }
+  return cells;
+}
+
+function buildWallRectsFromMaze(cells, cols, rows, cellSize, t, ox, oy){
+  const walls = [];
+  for (let r=0;r<rows;r++){
+    for (let c=0;c<cols;c++){
+      const cell = cells[r][c];
+      const x = ox + c*cellSize, y = oy + r*cellSize;
+      if (cell.walls.N) walls.push({x:x, y:y, w:cellSize, h:t});
+      if (cell.walls.W) walls.push({x:x, y:y, w:t, h:cellSize});
+      if (r === rows-1 && cell.walls.S) walls.push({x:x, y:y+cellSize-t, w:cellSize, h:t});
+      if (c === cols-1 && cell.walls.E) walls.push({x:x+cellSize-t, y:y, w:t, h:cellSize});
+    }
+  }
+  return walls;
+}
+
+function analyzeDeadEnds(cells, cols, rows){
+  const dead = [];
+  for (let r=0;r<rows;r++){
+    for (let c=0;c<cols;c++){
+      const cell = cells[r][c];
+      let open = 0;
+      if (!cell.walls.N) open++;
+      if (!cell.walls.E) open++;
+      if (!cell.walls.S) open++;
+      if (!cell.walls.W) open++;
+      if (open === 1) dead.push({r,c});
+    }
+  }
+  return dead;
+}
+
+function chooseFarExitCell(cols, rows){
+  const minDistCells = Math.max(Math.floor(Math.min(cols, rows)/2), 4);
+  const candidates = [];
+  for (let r=0;r<rows;r++){
+    for (let c=0;c<cols;c++){
+      const dx = c - 0, dy = r - 0;
+      const man = Math.sqrt(dx*dx + dy*dy);
+      if (man >= minDistCells) candidates.push({r,c});
+    }
+  }
+  if (candidates.length === 0) return {r:rows-1,c:cols-1};
+  return candidates[Math.floor(Math.random()*candidates.length)];
+}
+
+/* SETUP LEVEL */
+function setupLevel(level){
+  gameState.walls = []; gameState.traps = []; gameState.waterZones = [];
+  gameState.currentLevel = level; gameState.pingsUsed = 0;
+
+  const cols = 10, rows = 8;
+  const usableWidth = canvas.width * 0.85;
+  const usableHeight = canvas.height * 0.85;
+  const cellSize = Math.floor(Math.min(usableWidth / cols, usableHeight / rows));
+  const t = Math.max(5, Math.floor(cellSize * 0.14));
+  const offsetX = Math.floor((canvas.width - cols * cellSize) / 2);
+  const offsetY = Math.floor((canvas.height - rows * cellSize) / 2);
+
+  gameState.maze.cols = cols;
+  gameState.maze.rows = rows;
+  gameState.maze.cellSize = cellSize;
+  gameState.maze.wallThickness = t;
+  gameState.maze.offsetX = offsetX;
+  gameState.maze.offsetY = offsetY;
+
+  gameState.visibilityGrid = Array(rows).fill(0).map(()=>Array(cols).fill(0));
+
+  const cells = generateMaze(cols, rows);
+  gameState.maze.cells = cells;
+  gameState.walls = buildWallRectsFromMaze(cells, cols, rows, cellSize, t, offsetX, offsetY);
+
+  // spawn centered in start cell
+  gameState.player.x = offsetX + cellSize * 0.5;
+  gameState.player.y = offsetY + cellSize * 0.5;
+  gameState.player.vx = 0; gameState.player.vy = 0;
+
+  const exitCell = chooseFarExitCell(cols, rows);
+  gameState.goal = {
+    x: offsetX + exitCell.c * cellSize + cellSize * 0.5,
+    y: offsetY + exitCell.r * cellSize + cellSize * 0.5,
+    size: Math.max(12, Math.floor(cellSize * 0.36))
+  };
+
+  // water pools placed at dead-ends (avoid near start/exit)
+  const deadEnds = analyzeDeadEnds(cells, cols, rows);
+  shuffleArray(deadEnds);
+  const waterRange = [6,8];
+  const waterCount = Math.min(deadEnds.length, randInt(waterRange[0], waterRange[1]));
+  for (let i=0;i<waterCount;i++){
+    const d = deadEnds[i];
+    const cx = offsetX + d.c*cellSize + cellSize*0.5 + randInt(-cellSize*0.12, cellSize*0.12);
+    const cy = offsetY + d.r*cellSize + cellSize*0.5 + randInt(-cellSize*0.12, cellSize*0.12);
+    const water = { x: cx, y: cy, r: Math.max(10, Math.floor(cellSize*0.45)) };
+    const startPos = { x: offsetX + cellSize*0.5, y: offsetY + cellSize*0.5 };
+    if (distance(water, startPos) < cellSize*1.6) continue;
+    if (distance(water, gameState.goal) < cellSize*1.6) continue;
+    gameState.waterZones.push(water);
+  }
+
+  // traps sparse for variety
+  const trapCount = Math.max(0, Math.floor((cols*rows)/120) - 1);
+  for (let i=0;i<trapCount;i++){
+    const rr = randInt(0, rows-1), cc = randInt(0, cols-1);
+    const tx = offsetX + cc * cellSize + cellSize*0.5 + randInt(-cellSize*0.12, cellSize*0.12);
+    const ty = offsetY + rr * cellSize + cellSize*0.5 + randInt(-cellSize*0.12, cellSize*0.12);
+    if (Math.hypot(tx - gameState.player.x, ty - gameState.player.y) < cellSize*0.7) continue;
+    if (Math.hypot(tx - gameState.goal.x, ty - gameState.goal.y) < cellSize*0.7) continue;
+    gameState.traps.push({ x: tx, y: ty, size: Math.max(6, Math.floor(cellSize*0.26)) });
+  }
+
+  gameState.pingLimit = 10;
+  gameState.message = `Level ${level}: Use pings to reveal walls.`;
+
+  levelStartTime = performance.now() / 1000;
+  waterDeathFlash = 0; waterDeathActive = false; waterDeathAlpha = 1.0; freezePlayer = false;
+}
+
+/* input & physics */
+function handlePlayerInput(dt){
+  if (gameState.riddle.active || freezePlayer) return;
+  const p = gameState.player;
+  let ax=0, ay=0;
+  if (keys['up']) ay -= 1;
+  if (keys['down']) ay += 1;
+  if (keys['left']) ax -= 1;
+  if (keys['right']) ax += 1;
+  const mag = Math.sqrt(ax*ax + ay*ay);
+  if (mag>0){ ax/=mag; ay/=mag; }
+  p.vx += ax * p.speed * dt; p.vy += ay * p.speed * dt;
+  const spd = Math.sqrt(p.vx*p.vx + p.vy*p.vy);
+  if (spd > p.maxSpeed){ p.vx = (p.vx/spd)*p.maxSpeed; p.vy = (p.vy/spd)*p.maxSpeed; }
+  p.vx -= p.vx * Math.min(1, p.friction * dt);
+  p.vy -= p.vy * Math.min(1, p.friction * dt);
+
+  if (keys['space'] && !gameState.echo.active) pingEcho();
+
+  let newX = p.x + p.vx * dt;
+  let newY = p.y + p.vy * dt;
+
+  if (checkWallCollision(newX, p.y)){ newX = p.x; p.vx *= -0.2; const now = performance.now()/1000; if (now - levelStartTime >= 0.8 && now > lastDamage + DAMAGE_COOLDOWN){ loseLife("Wall Impact"); return; } }
+  if (checkWallCollision(p.x, newY)){ newY = p.y; p.vy *= -0.2; const now = performance.now()/1000; if (now - levelStartTime >= 0.8 && now > lastDamage + DAMAGE_COOLDOWN){ loseLife("Wall Impact"); return; } }
+
+  p.x = Math.max(p.size, Math.min(canvas.width - p.size, newX));
+  p.y = Math.max(p.size, Math.min(canvas.height - p.size, newY));
+}
+
+/* ping / echo */
+function pingEcho(){
+  if (gameState.riddle.active) return;
+  if (gameState.pingsUsed < gameState.pingLimit){
+    gameState.echo.active = true; gameState.echo.timer = gameState.echo.duration;
+    gameState.pingsUsed++; gameState.score += 10; gameState.message = "ECHO: Nearby walls revealed.";
+    playPing();
+    const cols = gameState.maze.cols, rows = gameState.maze.rows;
+    const cs = gameState.maze.cellSize, ox = gameState.maze.offsetX, oy = gameState.maze.offsetY;
+    for (let r=0;r<rows;r++){
+      for (let c=0;c<cols;c++){
+        const cx = ox + c*cs + cs*0.5; const cy = oy + r*cs + cs*0.5;
+        const d = Math.hypot(gameState.player.x - cx, gameState.player.y - cy);
+        if (d < gameState.echo.radius + cs*0.6) gameState.visibilityGrid[r][c] = 1;
+      }
+    }
+  } else {
+    if (!gameState.riddle.used) {
+      gameState.message = "OUT OF PINGS! Riddle appears...";
+      setTimeout(() => { if (!gameState.riddle.active) startRiddle(); }, 300);
+    } else {
+      endGame(false, "LOST SIGNAL: You exhausted your final echoes.");
+    }
+  }
+
+}
+
+/* lose life & riddle handling */
+function loseLife(reason){
+  if (gameState.riddle.active) return;
+  lastDamage = performance.now()/1000;
+  gameState.currentLives--;
+  if (gameState.currentLives <= 0) endGame(false, "ALIEN EXTINGUISHED: You ran out of lives.");
+  else { gameState.message = `DANGER: ${reason}. Life Lost! (${gameState.currentLives} remaining)`; gameState.score = Math.max(0, gameState.score - 50); setupLevel(gameState.currentLevel); }
+}
+
+function startRiddle(){
+  gameRunning = false;
+  gameState.riddle.active = true;
+  riddleFeedback.textContent = "";
+  riddleText.textContent = "If two witches were watching two watches then which witch was watching which watch?";
+  riddleInput.value = ""; riddleOverlay.style.display = 'flex';
+  setTimeout(()=> riddleOverlay.style.opacity = 1, 10);
+  riddleInput.focus();
+}
+
+function checkRiddleAnswer(){
+  const raw = riddleInput.value.trim().toLowerCase();
+  const isCorrect = raw === "a1b2"; 
+
+  if (isCorrect){
+    gameState.pingsUsed = Math.max(0, gameState.pingsUsed - 3);
+    gameState.score += 200;
+    gameState.message = "RIDDLE SOLVED — +3 pings restored.";
+    gameState.riddle.used = true;
+
+    riddleOverlay.style.opacity = 0;
+    setTimeout(() => {
+      riddleOverlay.style.display = 'none';
+      gameState.riddle.active = false;
+
+      gameRunning = true;
+      lastTime = performance.now();
+      requestAnimationFrame(update);
+    }, 400);
+  } else {
+    riddleFeedback.textContent = "INCORRECT. The void swallows your final echo.";
+    setTimeout(() => {
+      riddleOverlay.style.opacity = 0;
+      endGame(false, "LOST SIGNAL: Failed the riddle.");
+    }, 1200);
+  }
+}
+
+
+/* collision helpers */
+function checkWallCollision(x,y){
+  const r = gameState.player.size;
+  for (const w of gameState.walls){
+    const closestX = Math.max(w.x, Math.min(x, w.x + w.w));
+    const closestY = Math.max(w.y, Math.min(y, w.y + w.h));
+    const dx = x - closestX, dy = y - closestY;
+    if ((dx*dx + dy*dy) < (r*r)) return true;
+  }
+  return false;
+}
+
+/* core collisions */
+function checkGameCollisions(){
+  if (gameState.riddle.active) return;
+  const now = performance.now()/1000;
+  const p = gameState.player;
+
+  // WATER
+  for (const w of gameState.waterZones){
+    if (distance(p,w) < p.size + w.r*0.6){
+      if (now - levelStartTime < 0.8) continue;
+      waterDeathFlash = 1.0;
+      waterDeathActive = true;
+      waterDeathAlpha = 1.0;
+      freezePlayer = true;
+      gameState.currentLives = 0;
+      gameState.player.vx = 0; gameState.player.vy = 0;
+      playSizzle();
+
+      setTimeout(()=> {
+        waterDeathActive = false; freezePlayer = false;
+        endGame(false, "The Alien was completely dissolved in water.");
+      }, Math.round(waterDeathFlash * 1000));
+      return;
+    }
+  }
+
+  // traps
+  for (const t of gameState.traps){
+    if (distance(p,t) < p.size + t.size*0.8){
+      if (now - levelStartTime >= 0.8 && now > lastDamage + DAMAGE_COOLDOWN){ loseLife("TRAP ACTIVATED"); return; }
+    }
+  }
+
+  // goal
+  if (distance(p, gameState.goal) < p.size + gameState.goal.size){
+    if (gameState.currentLevel < gameState.maxLevels){
+      gameState.score += 100 * gameState.currentLevel;
+      startGame(gameState.currentLevel + 1);
+      gameState.message = `Level ${gameState.currentLevel} unlocked!`;
+    } else {
+      endGame(true, `SUCCESS! Signal restored after ${gameState.maxLevels} trials.`);
+    }
+  }
+}
+
+/*visibility*/
+function updateVisibility(dt){
+  const cols = gameState.maze.cols, rows = gameState.maze.rows;
+  const decayRate = 0.25; // ~4s fade
+  for (let r=0;r<rows;r++){
+    for (let c=0;c<cols;c++){
+      if (gameState.visibilityGrid[r][c] > 0){
+        gameState.visibilityGrid[r][c] -= decayRate * dt;
+        gameState.visibilityGrid[r][c] = Math.max(0, gameState.visibilityGrid[r][c]);
+      }
+    }
+  }
+}
+
+/* Drawing helpers: starry background */
+let stars = [];
+function initializeStars(){
+  stars = []; const n = Math.max(120, Math.floor((canvas.width*canvas.height)/7000));
+  for (let i=0;i<n;i++) stars.push({ x:Math.random()*canvas.width, y:Math.random()*canvas.height, size:Math.random()*1.6+0.4, speed:Math.random()*0.06+0.01, opacity:Math.random()*0.8+0.15 });
+}
+function drawStars(dt){
+  for (const s of stars){
+    s.y += s.speed * 30 * dt;
+    if (s.y > canvas.height){ s.y = 0; s.x = Math.random()*canvas.width; s.speed = Math.random()*0.06+0.01; s.opacity = Math.random()*0.8+0.15; }
+    ctx.fillStyle = `rgba(255,255,255,${s.opacity})`; ctx.beginPath(); ctx.arc(s.x, s.y, s.size, 0, Math.PI*2); ctx.fill();
+  }
+}
+
+/* fog cells: render dark cells except revealed ones */
+function drawFogCells(){
+  const cols = gameState.maze.cols, rows = gameState.maze.rows;
+  const cs = gameState.maze.cellSize, ox = gameState.maze.offsetX, oy = gameState.maze.offsetY;
+  for (let r=0;r<rows;r++){
+    for (let c=0;c<cols;c++){
+      const alpha = 1 - gameState.visibilityGrid[r][c];
+      if (alpha > 0.02){
+        ctx.fillStyle = `rgba(6,6,8,${0.52 * alpha})`; ctx.fillRect(ox + c*cs, oy + r*cs, cs, cs);
+        ctx.strokeStyle = `rgba(40,20,40,${0.05 * alpha})`; ctx.lineWidth = 1; ctx.strokeRect(ox + c*cs + 1, oy + r*cs + 1, cs - 2, cs - 2);
+      } else {
+        // slightly transparent floor to help navigation
+        ctx.fillStyle = `rgba(18,10,16,0.06)`; ctx.fillRect(ox + c*cs, oy + r*cs, cs, cs);
+      }
+    }
+  }
+}
+
+/* draw walls — only when nearby cell revealed */
+function drawMazeWallsFromCells(){
+  const cols = gameState.maze.cols, rows = gameState.maze.rows;
+  const cs = gameState.maze.cellSize, t = gameState.maze.wallThickness, ox = gameState.maze.offsetX, oy = gameState.maze.offsetY;
+  const cells = gameState.maze.cells;
+
+  for (let r=0;r<rows;r++){
+    for (let c=0;c<cols;c++){
+      const cell = cells[r][c];
+      const vis = gameState.visibilityGrid[r][c];
+      // north
+      if (cell.walls.N){
+        const neighborVis = (r-1>=0) ? gameState.visibilityGrid[r-1][c] : 0;
+        const glow = Math.max(vis, neighborVis);
+        if (glow > 0.02){
+          const core = `rgba(122,0,255,${0.96 * Math.min(1, glow + 0.12)})`;
+          const outer = `rgba(176,75,255,${0.34 * Math.min(1, glow + 0.06)})`;
+          const x = ox + c*cs, y = oy + r*cs;
+          ctx.fillStyle = outer; ctx.fillRect(x - Math.floor(t*0.6), y - Math.floor(t*0.9), cs + Math.floor(t*1.2), Math.floor(t*0.9));
+          ctx.fillStyle = core; ctx.fillRect(x, y, cs, t);
+        }
+      }
+      // west
+      if (cell.walls.W){
+        const neighborVis = (c-1>=0) ? gameState.visibilityGrid[r][c-1] : 0;
+        const glow = Math.max(vis, neighborVis);
+        if (glow > 0.02){
+          const core = `rgba(122,0,255,${0.96 * Math.min(1, glow + 0.12)})`;
+          const outer = `rgba(176,75,255,${0.34 * Math.min(1, glow + 0.06)})`;
+          const x = ox + c*cs, y = oy + r*cs;
+          ctx.fillStyle = outer; ctx.fillRect(x - Math.floor(t*0.9), y - Math.floor(t*0.6), Math.floor(t*0.9), cs + Math.floor(t*1.2));
+          ctx.fillStyle = core; ctx.fillRect(x, y, t, cs);
+        }
+      }
+      // south boundary
+      if (r === rows-1 && cell.walls.S){
+        const glow = Math.max(vis, 0);
+        if (glow > 0.02){
+          const core = `rgba(122,0,255,${0.96 * Math.min(1, glow + 0.12)})`;
+          const outer = `rgba(176,75,255,${0.34 * Math.min(1, glow + 0.06)})`;
+          const x = ox + c*cs, y = oy + r*cs + cs;
+          ctx.fillStyle = outer; ctx.fillRect(x - Math.floor(t*0.6), y, cs + Math.floor(t*1.2), Math.floor(t*0.9));
+          ctx.fillStyle = core; ctx.fillRect(x, y - t, cs, t);
+        }
+      }
+      // east boundary
+      if (c === cols-1 && cell.walls.E){
+        const glow = Math.max(vis, 0);
+        if (glow > 0.02){
+          const core = `rgba(122,0,255,${0.96 * Math.min(1, glow + 0.12)})`;
+          const outer = `rgba(176,75,255,${0.34 * Math.min(1, glow + 0.06)})`;
+          const x = ox + c*cs + cs, y = oy + r*cs;
+          ctx.fillStyle = outer; ctx.fillRect(x, y - Math.floor(t*0.6), Math.floor(t*0.9), cs + Math.floor(t*1.2));
+          ctx.fillStyle = core; ctx.fillRect(x - t, y, t, cs);
+        }
+      }
+    }
+  }
+}
+
+/* is cell revealed? */
+function isNearbyRevealed(x,y){
+  const cs = gameState.maze.cellSize, ox = gameState.maze.offsetX, oy = gameState.maze.offsetY;
+  const c = Math.floor((x - ox) / cs), r = Math.floor((y - oy) / cs);
+  if (r < 0 || c < 0 || r >= gameState.maze.rows || c >= gameState.maze.cols) return false;
+  return gameState.visibilityGrid[r][c] > 0.05;
+}
+
+/* draw the neon alien */
+let pulseTimer = 0;
+function drawAlien(dt){
+  const p = gameState.player;
+  pulseTimer += dt * 4;
+  const tMix = 0.5 + 0.5 * Math.sin(performance.now() / 350);
+  const c1 = {r:80,g:255,b:240}, c2 = {r:255,g:80,b:200};
+  const rcol = Math.floor(c1.r * (1-tMix) + c2.r * tMix);
+  const gcol = Math.floor(c1.g * (1-tMix) + c2.g * tMix);
+  const bcol = Math.floor(c1.b * (1-tMix) + c2.b * tMix);
+  const innerColor = `rgba(${rcol},${gcol},${bcol},0.98)`;
+
+  ctx.save();
+  ctx.globalAlpha = waterDeathAlpha; // fade control
+
+  // aura
+  const aura = ctx.createRadialGradient(p.x, p.y, p.size*0.4, p.x, p.y, p.size*4 * (1 + 0.15*Math.sin(pulseTimer)));
+  aura.addColorStop(0, `rgba(${Math.floor(rcol*0.9)},${Math.floor(gcol*0.9)},${Math.floor(bcol*0.9)},0.36)`);
+  aura.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = aura; ctx.beginPath(); ctx.arc(p.x, p.y, p.size*4, 0, Math.PI*2); ctx.fill();
+
+  // body
+  ctx.translate(p.x, p.y);
+  ctx.scale(1 + 0.06*Math.sin(pulseTimer*1.8), 1 + 0.06*Math.cos(pulseTimer*1.8));
+  const grad = ctx.createLinearGradient(-p.size, -p.size*1.6, p.size, p.size*1.6);
+  grad.addColorStop(0, `rgba(255,120,255,0.12)`); grad.addColorStop(1, `rgba(120,255,255,0.12)`);
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.moveTo(0, -p.size*1.25);
+  ctx.quadraticCurveTo(p.size*1.1, -p.size*0.6, p.size*0.5, p.size*1.25);
+  ctx.quadraticCurveTo(0, p.size*1.7, -p.size*0.5, p.size*1.25);
+  ctx.quadraticCurveTo(-p.size*1.1, -p.size*0.6, 0, -p.size*1.25);
+  ctx.fill();
+
+  ctx.fillStyle = innerColor;
+  ctx.beginPath();
+  ctx.moveTo(0, -p.size*0.9);
+  ctx.quadraticCurveTo(p.size*0.8, -p.size*0.5, p.size*0.35, p.size*1.0);
+  ctx.quadraticCurveTo(0, p.size*1.3, -p.size*0.35, p.size*1.0);
+  ctx.quadraticCurveTo(-p.size*0.8, -p.size*0.5, 0, -p.size*0.9);
+  ctx.fill();
+
+  // eyes & highlight
+  ctx.fillStyle = 'rgba(0,0,0,0.9)';
+  ctx.beginPath(); ctx.ellipse(-p.size*0.25, -p.size*0.2, p.size*0.12, p.size*0.16, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(p.size*0.25, -p.size*0.2, p.size*0.12, p.size*0.16, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.6)'; ctx.beginPath(); ctx.arc(0, -p.size*0.15, p.size*0.22, 0, Math.PI*2); ctx.fill();
+
+  ctx.restore();
+}
+
+/* draw environment: water pools, traps, goal */
+function drawEnvironment(){
+  const p = gameState.player;
+  const isEcho = gameState.echo.active;
+
+  for (const w of gameState.waterZones){
+    const d = Math.hypot(p.x - w.x, p.y - w.y);
+    const alpha = (isEcho && d < gameState.echo.radius) ? 0.92 : 0.28;
+    const grd = ctx.createRadialGradient(w.x, w.y, w.r*0.1, w.x, w.y, w.r);
+    grd.addColorStop(0, `rgba(60,180,255,${alpha})`); grd.addColorStop(1, `rgba(6,22,50,${alpha*0.5})`);
+    ctx.fillStyle = grd; ctx.beginPath(); ctx.arc(w.x,w.y,w.r,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle = `rgba(140,200,255,${0.12 * alpha})`; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(w.x,w.y,w.r+2,0,Math.PI*2); ctx.stroke();
+    if (isEcho && d < gameState.echo.radius){
+      const t = performance.now()/600;
+      ctx.strokeStyle = `rgba(200,240,255,${0.06 + 0.02*Math.sin(t)})`; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(w.x, w.y, w.r * (0.75 + 0.05*Math.sin(t*1.5)), 0, Math.PI*2); ctx.stroke();
+    }
+  }
+
+  for (const t of gameState.traps){
+    ctx.fillStyle = `rgba(220,30,30,0.9)`; ctx.beginPath(); ctx.arc(t.x,t.y,t.size,0,Math.PI*2); ctx.fill();
+  }
+
+  const goalVis = isNearbyRevealed(gameState.goal.x, gameState.goal.y);
+  if (goalVis){
+    const pulse = 1 + 0.18 * Math.sin(performance.now()/300);
+    ctx.strokeStyle = `rgba(255,215,120,${0.9})`; ctx.lineWidth = 3 * pulse;
+    ctx.strokeRect(gameState.goal.x - gameState.goal.size, gameState.goal.y - gameState.goal.size, gameState.goal.size*2, gameState.goal.size*2);
+  }
+}
+
+/* UI drawing — purple text */
+function drawUI(){
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#B04BFF';
+  ctx.font = '14px "Space Mono"';
+  ctx.fillText(`MAZE: ${gameState.currentLevel} / ${gameState.maxLevels}`, 12, 26);
+
+  let hearts = '';
+  for (let i=0;i<gameState.maxLives;i++) hearts += i < gameState.currentLives ? '♥ ' : '♡ ';
+  ctx.fillText(`LIVES: ${hearts}`, 12, 48);
+
+  ctx.textAlign = 'center';
+  const pingsLeft = Math.max(0, gameState.pingLimit - gameState.pingsUsed);
+  ctx.fillText(`ECHO PINGS: ${pingsLeft}`, canvas.width/2, 26);
+
+  ctx.textAlign = 'right';
+  ctx.fillText(`SCORE: ${gameState.score}`, canvas.width - 12, 26);
+
+  ctx.textAlign = 'center';
+  ctx.font = '13px "Space Mono"';
+  ctx.fillStyle = 'rgba(180,180,180,0.8)'; 
+  ctx.fillText(gameState.message, canvas.width/2, canvas.height - 12);
+}
+
+/* main draw */
+function drawGame(dt){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  drawStars(dt);
+  drawMazeWallsFromCells();
+  drawEnvironment();
+  drawFogCells();
+
+  if (gameState.echo.active){
+    ctx.save();
+    const t = gameState.echo.timer / gameState.echo.duration;
+    const ringRadius = gameState.echo.radius * (1 - t);
+    const grad = ctx.createRadialGradient(gameState.player.x, gameState.player.y, ringRadius*0.6, gameState.player.x, gameState.player.y, ringRadius);
+    grad.addColorStop(0, `rgba(176,75,255,0.38)`); grad.addColorStop(0.7, `rgba(255,140,80,0.06)`); grad.addColorStop(1, `rgba(255,140,80,0)`);
+    ctx.fillStyle = grad; ctx.beginPath(); ctx.arc(gameState.player.x, gameState.player.y, ringRadius, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle = `rgba(176,75,255,${0.6 * (1 - t)})`; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(gameState.player.x, gameState.player.y, ringRadius, 0, Math.PI*2); ctx.stroke();
+    ctx.restore();
+  }
+
+  drawAlien(dt);
+  drawUI();
+}
+
+/* update loop */
+function update(time){
+  if (!gameRunning && !waterDeathActive) return;
+  const dt = (time - lastTime)/1000 || 0; lastTime = time;
+
+  if (waterDeathActive && waterDeathFlash > 0){
+    waterDeathFlash = Math.max(0, waterDeathFlash - dt);
+    const progress = 1 - Math.max(0, waterDeathFlash / 1.0); // 0..1
+    waterDeathAlpha = 1 - progress; // linear fade 1 -> 0
+  }
+
+  handlePlayerInput(dt);
+
+  if (gameState.echo.active){
+    gameState.echo.timer -= dt;
+    if (gameState.echo.timer <= 0){ gameState.echo.active = false; gameState.message = "Darkness returns. Ping required."; }
+  }
+
+  updateVisibility(dt);
+  checkGameCollisions();
+
+  const pingsLeft = Math.max(0, gameState.pingLimit - gameState.pingsUsed);
+  if (pingsLeft <= 3 && !gameState.riddle.used && !gameState.riddle.active) {
+    solveRiddleButton.style.display = 'block';
+  } else {
+    solveRiddleButton.style.display = 'none';
+  }
+
+  drawGame(dt);
+  requestAnimationFrame(update);
+}
+
+/* start / end */
+function endGame(isWin, message){
+  gameRunning = false;
+  stopBGM();
+  riddleOverlay.style.opacity = 0; riddleOverlay.style.display = 'none';
+  endOverlay.style.display = 'flex'; setTimeout(()=> endOverlay.style.opacity = 1, 20);
+  endScore.textContent = `Final Score: ${gameState.score}`;
+  if (isWin){ endTitle.textContent = "SIGNAL RESTORED"; endMessage.textContent = message; endTitle.style.color = '#B04BFF'; }
+  else { endTitle.textContent = "SIGNAL LOST"; endMessage.textContent = message; endTitle.style.color = '#FF8A8A'; }
+}
+
+function startGame(level = 1){
+  const container = document.getElementById('game-container');
+  canvas.width = container.clientWidth;
+  canvas.height = container.clientHeight;
+  gameRunning = true;
+  lastTime = performance.now();
+  freezePlayer = false;
+  waterDeathActive = false;
+  waterDeathFlash = 0;
+  waterDeathAlpha = 1.0;
+  gameState.riddle.active = false;
+  startOverlay.style.display = 'none';
+  riddleOverlay.style.display = 'none';
+  endOverlay.style.display = 'none';
+  startOverlay.style.opacity = 0;
+  riddleOverlay.style.opacity = 0;
+  endOverlay.style.opacity = 0;
+  if (level === 1){
+    gameState.score = 0;
+    gameState.currentLives = gameState.maxLives;
+    initializeStars();
+  }
+  setupLevel(level);
+  drawGame(0);
+  requestAnimationFrame(update);
+}
+
+
+/* events */
+startButton.addEventListener('click', () => {
+  startBGM();  
+  startGame(1);
+});
+restartButton.addEventListener('click', () => {
+  startBGM();
+  startGame(1);
+});
+submitRiddleBtn.addEventListener('click', checkRiddleAnswer);
+solveRiddleButton.addEventListener('click', () => {
+  if (!gameState.riddle.active && !gameState.riddle.used) {
+    startRiddle();
+  }
+});
+riddleInput.addEventListener('keydown', (e)=> { if (e.key === 'Enter') checkRiddleAnswer(); });
+
+document.addEventListener('keydown', (e)=>{
+  const key = e.key;
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(key)) e.preventDefault();
+  switch(key.toLowerCase()){
+    case 'w': case 'arrowup': keys['up'] = true; break;
+    case 's': case 'arrowdown': keys['down'] = true; break;
+    case 'a': case 'arrowleft': keys['left'] = true; break;
+    case 'd': case 'arrowright': keys['right'] = true; break;
+    case ' ': keys['space'] = true; break;
+  }
+});
+document.addEventListener('keyup', (e)=>{
+  switch(e.key.toLowerCase()){
+    case 'w': case 'arrowup': keys['up'] = false; break;
+    case 's': case 'arrowdown': keys['down'] = false; break;
+    case 'a': case 'arrowleft': keys['left'] = false; break;
+    case 'd': case 'arrowright': keys['right'] = false; break;
+    case ' ': keys['space'] = false; break;
+  }
+});
+
+/* resize behavior */
+window.addEventListener('resize', ()=>{
+  const container = document.getElementById('game-container');
+  canvas.width = container.clientWidth; canvas.height = container.clientHeight;
+  initializeStars();
+  if (!gameRunning){ setupLevel(gameState.currentLevel); drawGame(0); }
+});
+
+/* init */
+canvas.width = document.getElementById('game-container').clientWidth;
+canvas.height = document.getElementById('game-container').clientHeight;
+initializeStars();
+setupLevel(1);
+drawGame(0);
+
+</script>
+</body>
+</html>
